@@ -5,7 +5,7 @@
   "description": "Sistema de cumplimiento de la Matriz de Riesgo Operacional - Duoc UC Sede Maipu",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && prisma migrate deploy && next build",
+    "build": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build",
     "start": "next start",
     "lint": "next lint",
     "prisma:generate": "prisma generate",
