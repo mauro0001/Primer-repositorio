@@ -1,0 +1,250 @@
+// Esquema de datos - Sistema de Cumplimiento SSO Sede Maipu (Duoc UC)
+// Motor por defecto: SQLite (archivo local, cero configuracion).
+// Para produccion se recomienda cambiar a PostgreSQL (ver README, seccion Despliegue):
+// solo hay que cambiar "provider" a "postgresql" y DATABASE_URL en .env
+//
+// Nota: SQLite no soporta enums nativos de Prisma, por eso los campos de
+// "tipo cerrado" (rol, tipoFormulario, periodicidad, etc.) son String.
+// Los valores validos de cada uno estan definidos y validados en src/lib/enums.ts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Usuarios y autenticacion
+// ---------------------------------------------------------------------------
+
+// rol: "ADMIN" | "RESPONSABLE"
+model Usuario {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  nombre       String
+  rol          String   @default("RESPONSABLE")
+  activo       Boolean  @default(true)
+  creadoEn     DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  registros    RegistroCumplimiento[]
+
+  @@map("usuarios")
+}
+
+// ---------------------------------------------------------------------------
+// Estructura institucional
+// ---------------------------------------------------------------------------
+
+model Escuela {
+  id     String @id @default(cuid())
+  nombre String @unique
+  activa Boolean @default(true)
+  orden  Int @default(0)
+
+  directores           DirectorEscuela[]
+  camposRequeridos      CampoRequeridoEscuela[]
+  registros             RegistroCumplimiento[]
+
+  @@map("escuelas")
+}
+
+// Los 24 cargos institucionales (ej. Jefe de Servicios Generales, Coordinador SSO).
+// La persona asignada cambia en el tiempo -> se edita desde el panel de administracion.
+model CargoInstitucional {
+  id             String  @id @default(cuid())
+  codigo         String  @unique // ej: "SSO-01"
+  nombreCargo    String          // ej: "Coordinador SSO"
+  personaNombre  String
+  personaEmail   String
+  jefaturaEmail  String?         // a quien escalar si no responde; si es null se usa el correo global de Gestion de la Operacion
+  activo         Boolean @default(true)
+  creadoEn       DateTime @default(now())
+  actualizadoEn  DateTime @updatedAt
+
+  puntosControl  PuntoControl[]
+  registros      RegistroCumplimiento[]
+
+  @@map("cargos_institucionales")
+}
+
+// Los 13 Directores de Carrera repartidos en las 6 escuelas de la sede.
+// Una escuela puede tener mas de un director; una persona puede dirigir mas de una escuela,
+// por eso es una tabla de filas (escuela, persona) y no un campo unico por escuela.
+model DirectorEscuela {
+  id             String  @id @default(cuid())
+  escuelaId      String
+  escuela        Escuela @relation(fields: [escuelaId], references: [id], onDelete: Cascade)
+  carreraNombre  String          // carrera especifica que dirige dentro de la escuela
+  personaNombre  String
+  personaEmail   String
+  jefaturaEmail  String?
+  activo         Boolean @default(true)
+  creadoEn       DateTime @default(now())
+  actualizadoEn  DateTime @updatedAt
+
+  registros      RegistroCumplimiento[]
+
+  @@map("directores_escuela")
+}
+
+// ---------------------------------------------------------------------------
+// Matriz de riesgo operacional: los 149 puntos de control
+// ---------------------------------------------------------------------------
+
+// tipoFormulario: "A" (checklist periodico) | "B" (registro por escuela) | "C" (proveedor)
+// periodicidad: "MENSUAL" | "TRIMESTRAL" | "SEMESTRAL" | "ANUAL" | "EVENTUAL"
+// tipoResponsable: "CARGO_INSTITUCIONAL" | "DIRECTOR_ESCUELA"
+model PuntoControl {
+  id                  String  @id @default(cuid())
+  codigo              String  @unique // ej: "PC-014"
+  nombre              String
+  macroproceso        String
+  tipoFormulario       String
+  periodicidad        String
+  evidenciaRequerida  String          // descripcion de que evidencia se debe adjuntar
+  tipoResponsable      String
+  cargoInstitucionalId String?
+  cargoInstitucional   CargoInstitucional? @relation(fields: [cargoInstitucionalId], references: [id])
+  activo              Boolean @default(true)
+  creadoEn            DateTime @default(now())
+  actualizadoEn       DateTime @updatedAt
+
+  camposRequeridos    CampoRequeridoEscuela[]
+  registros           RegistroCumplimiento[]
+
+  @@map("puntos_control")
+}
+
+// Resuelve el Tipo B: por cada campo adicional que una escuela exige en un punto de
+// control especifico, hay una fila aqui. El formulario la consulta dinamicamente.
+// tipoCampo: "TEXTO" | "SI_NO" | "LISTA" | "FECHA"
+model CampoRequeridoEscuela {
+  id             String   @id @default(cuid())
+  escuelaId      String
+  escuela        Escuela  @relation(fields: [escuelaId], references: [id], onDelete: Cascade)
+  puntoControlId String
+  puntoControl   PuntoControl @relation(fields: [puntoControlId], references: [id], onDelete: Cascade)
+  nombreCampo    String
+  tipoCampo      String
+  opcionesLista  String?  // opciones separadas por "|" cuando tipoCampo = LISTA
+  orden          Int      @default(0)
+  obligatorio    Boolean  @default(true)
+
+  @@unique([escuelaId, puntoControlId, nombreCampo])
+  @@map("campos_requeridos_escuela")
+}
+
+// ---------------------------------------------------------------------------
+// Proveedores (Tipo C)
+// ---------------------------------------------------------------------------
+
+model ProveedorContrato {
+  id               String   @id @default(cuid())
+  nombreProveedor  String
+  numeroContrato   String
+  vigenciaInicio   DateTime?
+  vigenciaFin      DateTime?
+  activo           Boolean  @default(true)
+
+  registros        RegistroCumplimiento[]
+
+  @@map("proveedores_contratos")
+}
+
+// ---------------------------------------------------------------------------
+// Registro transaccional: un envio de formulario = una fila
+// ---------------------------------------------------------------------------
+
+// cumple: "SI" | "NO" | "CON_OBSERVACION" (solo Tipo A/C)
+model RegistroCumplimiento {
+  id                  String   @id @default(cuid())
+
+  puntoControlId      String
+  puntoControl        PuntoControl @relation(fields: [puntoControlId], references: [id])
+
+  usuarioId           String
+  usuario              Usuario @relation(fields: [usuarioId], references: [id])
+
+  // Cargo institucional responsable al momento del envio (Tipo A/C).
+  // Se guarda el id ademas de en el usuario porque las personas rotan de cargo
+  // y el historico debe reflejar quien era responsable en ese momento.
+  cargoInstitucionalId String?
+  cargoInstitucional   CargoInstitucional? @relation(fields: [cargoInstitucionalId], references: [id])
+
+  fechaVerificacion   DateTime
+  proximaFecha        DateTime?
+
+  // Tipo A / C
+  cumple              String?
+  observacion         String?
+
+  // Evidencia (comun a los 3 tipos)
+  evidenciaUrl        String?
+  evidenciaNombre     String?
+
+  // Tipo B - nucleo fijo
+  escuelaId           String?
+  escuela             Escuela? @relation(fields: [escuelaId], references: [id])
+  directorEscuelaId   String?
+  directorEscuela     DirectorEscuela? @relation(fields: [directorEscuelaId], references: [id])
+  carrera             String?
+  docenteResponsable  String?
+  // Tipo B - respuestas de los campos dinamicos de CampoRequeridoEscuela,
+  // guardadas como JSON: [{ campoId, nombreCampo, valor }]
+  respuestasDinamicas String?
+
+  // Tipo C
+  proveedorContratoId String?
+  proveedorContrato   ProveedorContrato? @relation(fields: [proveedorContratoId], references: [id])
+
+  creadoEn            DateTime @default(now())
+
+  @@map("registros_cumplimiento")
+}
+
+// ---------------------------------------------------------------------------
+// Configuracion editable (nada hardcodeado)
+// ---------------------------------------------------------------------------
+
+// Una fila por periodicidad: dia limite del mes, dias de aviso previo y de escalamiento,
+// y en que meses del anio aplica. Editable desde /admin/calendario.
+model ConfiguracionCalendario {
+  id                      String   @id @default(cuid())
+  periodicidad            String   @unique
+  mesesVencimiento        String   // meses separados por coma, ej "3,6,9,12". Vacio = sin calendario fijo (EVENTUAL)
+  diaVencimiento          Int      @default(20)
+  diasRecordatorioAntes   Int      @default(7)
+  diasEscalamientoDespues Int      @default(7)
+  recordatorioActivo      Boolean  @default(true)
+
+  @@map("configuracion_calendario")
+}
+
+// Valores globales unicos del sistema (correo de escalamiento por defecto, nombre app, etc.)
+model ConfiguracionGlobal {
+  id                    String @id @default("global")
+  emailEscalamientoDefault String @default("gestion.operacion@duoc.cl")
+  nombreInstitucion     String @default("Duoc UC - Sede Maipu")
+
+  @@map("configuracion_global")
+}
+
+// Evita reenviar el mismo recordatorio/escalamiento mas de una vez por dia.
+// tipo: "RECORDATORIO" | "ESCALAMIENTO"
+model NotificacionLog {
+  id             String   @id @default(cuid())
+  tipo           String
+  puntoControlId String
+  claveResponsable String  // id de CargoInstitucional o DirectorEscuela, para diferenciar destinatarios
+  periodoClave   String   // ej "2026-09-20" para evitar duplicados en el mismo periodo
+  destinatario   String
+  enviadoEn      DateTime @default(now())
+
+  @@unique([tipo, puntoControlId, claveResponsable, periodoClave])
+  @@map("notificaciones_log")
+}
